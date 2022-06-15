@@ -130,9 +130,18 @@ Response::Response(Request &req, Config *conf, Client *client, EvMa *evma) : _cg
 			return;
 		}
 		else if (req.type() == POST && (_loc->flags() & LOC_UPLOAD))
+		{
 			upload_file(req);
+		}
+		else if (!(_flags & RES_ISCGI) && (req.type() != DELETE))
+		{
+			set_body_ress(req, conf);
+		}
 		else if (req.type() == DELETE)
+		{
 			delete_file(req);
+		}
+		return;
 	}
 
 	if (_conf->autoindex() == "on")
@@ -434,16 +443,32 @@ void	Response::set_headers(str_t path, Request &req)
 
 void			Response::upload_file(Request &req)
 {
+	bool		isEnd = false;
+	struct stat s;
+
 	if (!req.body().size())
 	{
 		set_status(500);
 		return;
 	}
-	
+
+	if ( stat(_loc->upload_path().c_str(), &s) == 0 )
+	{
+	    if ( s.st_mode & S_IFREG )
+	    {
+	        set_status(500);
+			return;
+	    }
+	}
+	else if (mkdir(_loc->upload_path().c_str(), 0777))
+	{
+		set_status(500);
+		return;
+	};
+
 	str_t			filename;
-	
 	std::vector<raw_str_t>::iterator it = req.body().begin();
-	for (; it != req.body().end(); it++)
+	for (; it < req.body().end(); it++)
 	{
 		filename.clear();
 		for (; it < req.body().end() && it->size() != 0; it++)
@@ -457,7 +482,6 @@ void			Response::upload_file(Request &req)
 				pos_fn++;
 				for (; pos_fn != it->end() && *pos_fn != '\"'; pos_fn++)
 					{ filename.append(1, *pos_fn); }
-				//break;
 			}
 		}
 		if (filename == "")
@@ -466,14 +490,19 @@ void			Response::upload_file(Request &req)
 		std::ofstream	stream(filepath.c_str(), std::ofstream::binary);
 
 		it++;			//boundaries-"headers" are precedeed and followed by empty line
-		for (; it < req.body().end() && !req.isBoundary(*it); it++)
+		for (; it != req.body().end() && !req.isBoundary(*it, isEnd); it++)
 		{
+			if (isEnd)
+				break;
 			char *tmp = raw_to_char(*it);
 			stream.write(tmp, it->size());
 			stream.write(CRLF, 2);
 		}
 		stream.close();
+		if (isEnd)
+			break;
 	}
+	set_status(202);
 }
 
 // to test quickly: curl -X DELETE -i 'http://localhost:8001/love/love.html'
